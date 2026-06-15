@@ -22,6 +22,7 @@ type GlobalSessionsState = {
   upsertSession: (session: Session) => void;
   removeSessions: (ids: Iterable<string>) => void;
   archiveSessions: (ids: Iterable<string>, archivedAt?: number) => void;
+  unarchiveSessions: (ids: Iterable<string>) => void;
 };
 
 const PAGE_SIZE = 500;
@@ -520,6 +521,54 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
         activeSessions: nextActiveSessions,
         archivedSessions: [...movedSessions, ...remainingArchivedSessions],
         sessionsByDirectory: buildSessionsByDirectory(nextActiveSessions),
+      };
+    });
+  },
+
+  unarchiveSessions: (ids) => {
+    const idSet = ids instanceof Set ? ids : new Set(ids);
+    if (idSet.size === 0) {
+      return;
+    }
+
+    set((state) => {
+      const movedSessions: Session[] = [];
+      const nextArchivedSessions = state.archivedSessions.filter((session) => {
+        if (!idSet.has(session.id)) {
+          return true;
+        }
+        const nextTime = { ...(session.time ?? {}) };
+        delete (nextTime as { archived?: unknown }).archived;
+        movedSessions.push({ ...session, time: nextTime });
+        return false;
+      });
+
+      let activeChanged = false;
+      const nextActiveSessions = state.activeSessions.map((session) => {
+        if (!idSet.has(session.id) || !session.time?.archived) {
+          return session;
+        }
+        const nextTime = { ...session.time };
+        delete (nextTime as { archived?: unknown }).archived;
+        activeChanged = true;
+        return { ...session, time: nextTime };
+      });
+
+      if (movedSessions.length === 0 && !activeChanged) {
+        return state;
+      }
+
+      const baseActiveSessions = activeChanged ? nextActiveSessions : state.activeSessions;
+      const activeIds = new Set(baseActiveSessions.map((session) => session.id));
+      const newActiveSessions = movedSessions.filter((session) => !activeIds.has(session.id));
+      const activeSessions = newActiveSessions.length > 0
+        ? [...baseActiveSessions, ...newActiveSessions]
+        : baseActiveSessions;
+
+      return {
+        activeSessions,
+        archivedSessions: movedSessions.length > 0 ? nextArchivedSessions : state.archivedSessions,
+        sessionsByDirectory: buildSessionsByDirectory(activeSessions),
       };
     });
   },

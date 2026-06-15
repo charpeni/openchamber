@@ -122,6 +122,21 @@ describe('core-routes', () => {
     expect(response.body).toEqual({ body: { content: 'Snippet body' } });
   });
 
+  it('should parse JSON bodies for session patch routes', async () => {
+    const app = express();
+    registerCommonRequestMiddleware(app, { express });
+    app.patch('/api/session/ses_1', (req, res) => {
+      res.json({ body: req.body });
+    });
+
+    const response = await request(app)
+      .patch('/api/session/ses_1')
+      .send({ time: { archived: null } })
+      .expect(200);
+
+    expect(response.body).toEqual({ body: { time: { archived: null } } });
+  });
+
   it('should require API auth before probing loopback preview URLs', async () => {
     const app = express();
     const originalFetch = globalThis.fetch;

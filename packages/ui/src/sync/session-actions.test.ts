@@ -9,7 +9,10 @@ const registeredSessionDirectories: Array<{ sessionID: string; directory: string
 let sessionRevertResult: { data?: unknown; error?: unknown; response?: { status?: number } } = {}
 let questionReplyError: unknown | null = null
 let sessionShareResult: { data?: unknown; error?: unknown; response?: { status?: number } } = {}
+let sessionUpdateResult: unknown = null
 const globalUpsertedSessions: unknown[] = []
+const sessionUpdateCalls: Array<{ sessionId: string; updates: Record<string, unknown>; directory?: string | null }> = []
+const globalUnarchiveCalls: string[][] = []
 
 const mockScopedClient = {
   permission: {
@@ -104,6 +107,10 @@ mock.module("@/lib/opencode/client", () => ({
       }
       return Promise.resolve(sessionRevertResult.data)
     }),
+    updateSession: mock((sessionId: string, updates: Record<string, unknown>, directory?: string | null) => {
+      sessionUpdateCalls.push({ sessionId, updates, directory })
+      return Promise.resolve(sessionUpdateResult)
+    }),
   },
 }))
 
@@ -165,6 +172,9 @@ mock.module("@/stores/useGlobalSessionsStore", () => ({
     getState: () => ({
       upsertSession: (session: unknown) => {
         globalUpsertedSessions.push(session)
+      },
+      unarchiveSessions: (ids: string[]) => {
+        globalUnarchiveCalls.push(ids)
       },
     }),
   },
@@ -314,6 +324,56 @@ describe("shareSession live state", () => {
     expect(storedDiff.after).toBe(undefined)
     expect(globalDiff.before).toBe(undefined)
     expect(resultDiff.after).toBe(undefined)
+  })
+})
+
+describe("unarchiveSession confirmation", () => {
+  beforeEach(() => {
+    globalUpsertedSessions.length = 0
+    globalUnarchiveCalls.length = 0
+    sessionUpdateCalls.length = 0
+    sessionUpdateResult = null
+  })
+
+  test("updates global state only after the server confirms the session is unarchived", async () => {
+    const restoredSession = { id: "session-a", time: { created: 1, updated: 2 } } as Session
+    sessionUpdateResult = restoredSession
+
+    const { setActionRefs, unarchiveSession } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, createChildStores([]), () => "/current/project")
+
+    const result = await unarchiveSession("session-a")
+
+    expect(result).toBe(true)
+    expect(sessionUpdateCalls).toEqual([
+      {
+        sessionId: "session-a",
+        updates: { time: { archived: null } },
+        directory: "/test/project",
+      },
+    ])
+    expect(globalUnarchiveCalls).toEqual([])
+    expect(globalUpsertedSessions).toEqual([restoredSession])
+  })
+
+  test("does not report success when the server still returns archived state", async () => {
+    sessionUpdateResult = { id: "session-a", time: { created: 1, updated: 2, archived: 3 } } as Session
+
+    const { setActionRefs, unarchiveSession } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, createChildStores([]), () => "/current/project")
+
+    const originalConsoleError = console.error
+    console.error = mock(() => undefined) as unknown as typeof console.error
+    let result = true
+    try {
+      result = await unarchiveSession("session-a")
+    } finally {
+      console.error = originalConsoleError
+    }
+
+    expect(result).toBe(false)
+    expect(globalUnarchiveCalls).toEqual([])
+    expect(globalUpsertedSessions).toEqual([])
   })
 })
 

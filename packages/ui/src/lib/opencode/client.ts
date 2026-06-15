@@ -525,7 +525,10 @@ class OpencodeService {
     const sdkPatch = {
       ...(patch.title !== undefined ? { title: patch.title } : {}),
       ...(patch.metadata !== undefined ? { metadata: patch.metadata } : {}),
-      ...(patch.time?.archived !== undefined && patch.time.archived !== null ? { time: { archived: patch.time.archived } } : {}),
+      // The server accepts `archived: null` to unarchive, but the generated
+      // SDK types only declare `number | undefined`. Cast to keep the null
+      // signal while satisfying the type checker.
+      ...(patch.time?.archived !== undefined ? { time: { archived: patch.time.archived as number | undefined } } : {}),
     };
     const response = await this.client.session.update({
       sessionID: id,

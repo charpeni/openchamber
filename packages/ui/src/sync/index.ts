@@ -144,6 +144,8 @@ export {
   createSession,
   deleteSession,
   archiveSession,
+  unarchiveSession,
+  unarchiveSessions,
   updateSessionTitle,
   shareSession,
   unshareSession,

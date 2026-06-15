@@ -78,4 +78,38 @@ describe('useGlobalSessionsStore', () => {
     expect(useGlobalSessionsStore.getState().activeSessions).toEqual([]);
     expect(resolveGlobalSessionDirectory(useGlobalSessionsStore.getState().archivedSessions[0])).toBe('/repo/app');
   });
+
+  test('moves an archived session back to active when unarchiving', () => {
+    useGlobalSessionsStore.getState().upsertSession(buildSession('https://share.example/a', {
+      directory: '/repo/app',
+      time: { created: 1, updated: 3, archived: 4 },
+    }));
+
+    useGlobalSessionsStore.getState().unarchiveSessions(['ses_1']);
+
+    const state = useGlobalSessionsStore.getState();
+    expect(state.archivedSessions).toEqual([]);
+    expect(state.activeSessions).toHaveLength(1);
+    expect(state.activeSessions[0]?.id).toBe('ses_1');
+    expect(state.activeSessions[0]?.time?.archived).toBe(undefined);
+    expect(state.sessionsByDirectory.get('/repo/app')?.[0]?.id).toBe('ses_1');
+  });
+
+  test('preserves references when no sessions need unarchiving', () => {
+    useGlobalSessionsStore.getState().upsertSession(buildSession('https://share.example/a', {
+      directory: '/repo/app',
+    }));
+
+    const before = useGlobalSessionsStore.getState();
+    const activeSessions = before.activeSessions;
+    const archivedSessions = before.archivedSessions;
+    const sessionsByDirectory = before.sessionsByDirectory;
+
+    useGlobalSessionsStore.getState().unarchiveSessions(['ses_1', 'missing']);
+
+    const after = useGlobalSessionsStore.getState();
+    expect(after.activeSessions).toBe(activeSessions);
+    expect(after.archivedSessions).toBe(archivedSessions);
+    expect(after.sessionsByDirectory).toBe(sessionsByDirectory);
+  });
 });

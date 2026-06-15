@@ -43,6 +43,8 @@ import {
   createSession as createSessionAction,
   deleteSession as deleteSessionAction,
   archiveSession as archiveSessionAction,
+  unarchiveSession as unarchiveSessionAction,
+  unarchiveSessions as unarchiveSessionsAction,
   updateSessionTitle as updateSessionTitleAction,
   shareSession as shareSessionAction,
   unshareSession as unshareSessionAction,
@@ -273,6 +275,8 @@ export type SessionUIState = {
   deleteSessions: (ids: string[], options?: Record<string, unknown>) => Promise<{ deletedIds: string[]; failedIds: string[] }>
   archiveSession: (id: string) => Promise<boolean>
   archiveSessions: (ids: string[], options?: Record<string, unknown>) => Promise<{ archivedIds: string[]; failedIds: string[] }>
+  unarchiveSession: (id: string) => Promise<boolean>
+  unarchiveSessions: (ids: string[], options?: Record<string, unknown>) => Promise<{ unarchivedIds: string[]; failedIds: string[] }>
   updateSessionTitle: (sessionId: string, title: string) => Promise<void>
   shareSession: (sessionId: string) => Promise<Session | null>
   unshareSession: (sessionId: string) => Promise<Session | null>
@@ -1060,6 +1064,12 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       else failedIds.push(id)
     }
     return { archivedIds, failedIds }
+  },
+
+  unarchiveSession: (id) => unarchiveSessionAction(id),
+
+  unarchiveSessions: async (ids) => {
+    return unarchiveSessionsAction(ids)
   },
 
   // ---------------------------------------------------------------------------

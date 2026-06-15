@@ -241,6 +241,8 @@ export interface SessionStore {
     deleteSessions: (ids: string[], options?: { archiveWorktree?: boolean; deleteRemoteBranch?: boolean; deleteLocalBranch?: boolean; remoteName?: string; silent?: boolean }) => Promise<{ deletedIds: string[]; failedIds: string[] }>;
     archiveSession: (id: string) => Promise<boolean>;
     archiveSessions: (ids: string[], options?: { silent?: boolean }) => Promise<{ archivedIds: string[]; failedIds: string[] }>;
+    unarchiveSession: (id: string) => Promise<boolean>;
+    unarchiveSessions: (ids: string[], options?: { silent?: boolean }) => Promise<{ unarchivedIds: string[]; failedIds: string[] }>;
     updateSessionTitle: (id: string, title: string) => Promise<void>;
     shareSession: (id: string) => Promise<Session | null>;
     unshareSession: (id: string) => Promise<Session | null>;

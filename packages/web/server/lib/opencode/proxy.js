@@ -1,4 +1,5 @@
 import { createProxyMiddleware } from 'http-proxy-middleware';
+import { createRequire } from 'module';
 
 import {
   applyForwardProxyResponseHeaders,
@@ -6,6 +7,43 @@ import {
   shouldForwardProxyResponseHeader,
 } from '../../proxy-headers.js';
 import { createRealpathCache } from '../path-realpath-cache.js';
+
+const require = createRequire(import.meta.url);
+
+const openOpenCodeDb = async (dbPath) => {
+  try {
+    const { Database } = await import('bun:sqlite');
+    const db = new Database(dbPath);
+    return {
+      run: (sql, params = []) => db.run(sql, params),
+      close: () => db.close(),
+    };
+  } catch {
+    const Database = require('better-sqlite3');
+    const db = new Database(dbPath);
+    return {
+      run: (sql, params = []) => db.prepare(sql).run(...params),
+      close: () => db.close(),
+    };
+  }
+};
+
+const isSessionUnarchivePatch = (body) => {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return false;
+  }
+  const bodyKeys = Object.keys(body);
+  const timeKeys = body.time && typeof body.time === 'object' && !Array.isArray(body.time)
+    ? Object.keys(body.time)
+    : [];
+  return Boolean(
+    bodyKeys.length === 1
+    && bodyKeys[0] === 'time'
+    && timeKeys.length === 1
+    && timeKeys[0] === 'archived'
+    && body.time.archived === null
+  );
+};
 
 export const createDirectoryQueryCanonicalizer = ({ realpath, ...cacheOptions } = {}) => {
   const realpathCache = createRealpathCache({ fallbackOnError: true, realpath, ...cacheOptions });
@@ -154,6 +192,50 @@ export const sanitizeSessionListPayload = (payload) => {
     return payload;
   }
   return payload.map((session) => sanitizeSessionListItem(session));
+};
+
+const parseArchivedQuery = (value) => {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (raw === true || raw === 'true') return true;
+  if (raw === false || raw === 'false') return false;
+  return null;
+};
+
+const filterSessionListByArchivedQuery = (payload, archived) => {
+  if (!Array.isArray(payload) || archived === null) {
+    return payload;
+  }
+  return payload.filter((session) => Boolean(session?.time?.archived) === archived);
+};
+
+const toFiniteNumber = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const getSessionUpdatedCursor = (session) => {
+  return toFiniteNumber(session?.time?.updated ?? session?.time_updated);
+};
+
+const readNextSessionListCursor = (headers, payload) => {
+  const headerCursor = toFiniteNumber(headers.get?.('x-next-cursor'));
+  if (headerCursor !== undefined) {
+    return headerCursor;
+  }
+  const lastSession = Array.isArray(payload) ? payload[payload.length - 1] : undefined;
+  return getSessionUpdatedCursor(lastSession);
+};
+
+const parseSessionListLimit = (value) => {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const parsed = Number.parseInt(String(raw ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 100;
+};
+
+const setSessionListCursor = (requestPath, cursor) => {
+  const url = new URL(requestPath, 'http://localhost');
+  url.searchParams.set('cursor', String(cursor));
+  return `${url.pathname}${url.search}`;
 };
 
 export const registerOpenCodeProxy = (app, deps) => {
@@ -418,7 +500,8 @@ export const registerOpenCodeProxy = (app, deps) => {
         : (typeof req.url === 'string' ? req.url : '');
       const upstreamPathRaw = requestUrl.startsWith('/api') ? requestUrl.slice(4) || '/' : requestUrl;
       const upstreamPath = await canonicalizeDirectoryQuery(upstreamPathRaw);
-      const upstream = await fetch(buildOpenCodeUrl(upstreamPath, ''), {
+      const archivedFilter = parseArchivedQuery(req.query?.archived);
+      const fetchSessionListPage = (pagePath) => fetch(buildOpenCodeUrl(pagePath, ''), {
         method: 'GET',
         headers: {
           ...collectForwardProxyHeaders(req.headers, getOpenCodeAuthHeaders()),
@@ -426,6 +509,8 @@ export const registerOpenCodeProxy = (app, deps) => {
           'accept-encoding': 'identity',
         },
       });
+
+      const upstream = await fetchSessionListPage(upstreamPath);
 
       res.status(upstream.status);
       applyForwardProxyResponseHeaders(upstream.headers, res);
@@ -447,8 +532,69 @@ export const registerOpenCodeProxy = (app, deps) => {
         return;
       }
 
+      if (Array.isArray(payload) && archivedFilter !== null) {
+        const limit = parseSessionListLimit(req.query?.limit);
+        const filtered = [];
+        let nextCursor;
+        let nextUpstreamPath = upstreamPath;
+        let pagePayload = payload;
+        let pageHeaders = upstream.headers;
+        let previousCursor;
+
+        while (true) {
+          for (const session of pagePayload) {
+            if (Boolean(session?.time?.archived) !== archivedFilter) {
+              continue;
+            }
+            filtered.push(session);
+            if (filtered.length >= limit) {
+              nextCursor = getSessionUpdatedCursor(session);
+              break;
+            }
+          }
+
+          if (filtered.length >= limit || pagePayload.length === 0 || pagePayload.length < limit) {
+            break;
+          }
+
+          const pageCursor = readNextSessionListCursor(pageHeaders, pagePayload);
+          if (pageCursor === undefined || pageCursor === previousCursor) {
+            break;
+          }
+
+          previousCursor = pageCursor;
+          nextUpstreamPath = setSessionListCursor(nextUpstreamPath, pageCursor);
+          const nextUpstream = await fetchSessionListPage(nextUpstreamPath);
+          const nextContentType = nextUpstream.headers.get('content-type') || 'application/json; charset=utf-8';
+          if (!nextContentType.toLowerCase().includes('application/json')) {
+            break;
+          }
+
+          const nextBodyText = await nextUpstream.text();
+          try {
+            pagePayload = JSON.parse(nextBodyText);
+          } catch {
+            break;
+          }
+          if (!Array.isArray(pagePayload)) {
+            break;
+          }
+          pageHeaders = nextUpstream.headers;
+        }
+
+        if (nextCursor !== undefined) {
+          res.setHeader('x-next-cursor', String(nextCursor));
+        } else {
+          res.removeHeader('x-next-cursor');
+        }
+
+        res.setHeader('content-type', contentType);
+        res.json(sanitizeSessionListPayload(filtered));
+        return;
+      }
+
       res.setHeader('content-type', contentType);
-      res.json(sanitizeSessionListPayload(payload));
+      res.json(sanitizeSessionListPayload(filterSessionListByArchivedQuery(payload, archivedFilter)));
     } catch (error) {
       if (isAbortError(error)) {
         return;
@@ -584,6 +730,59 @@ export const registerOpenCodeProxy = (app, deps) => {
 
   app.get('/api/experimental/session', (req, res, next) => {
     return forwardSanitizedSessionListRequest(req, res, next, 'experimental.session');
+  });
+
+  app.patch('/api/session/:sessionID', async (req, res, next) => {
+    if (!isSessionUnarchivePatch(req.body)) {
+      return next();
+    }
+
+    const sessionID = typeof req.params?.sessionID === 'string' ? req.params.sessionID.trim() : '';
+    if (!sessionID) {
+      return res.status(400).json({ error: 'Session ID is required' });
+    }
+
+    try {
+      const openCodeDataPath = typeof process.env.OPENCODE_DATA_DIR === 'string' && process.env.OPENCODE_DATA_DIR.trim().length > 0
+        ? path.resolve(process.env.OPENCODE_DATA_DIR.trim())
+        : path.join(os.homedir(), '.local', 'share', 'opencode');
+      const dbPath = path.join(openCodeDataPath, 'opencode.db');
+      if (!fs.existsSync(dbPath)) {
+        return res.status(503).json({ error: 'OpenCode database is not available' });
+      }
+
+      const db = await openOpenCodeDb(dbPath);
+      try {
+        const result = db.run('UPDATE session SET time_archived = NULL, time_updated = ? WHERE id = ?', [Date.now(), sessionID]);
+        if (result.changes === 0) {
+          return res.status(404).json({ error: 'Session not found' });
+        }
+      } finally {
+        db.close();
+      }
+
+      const query = new URLSearchParams();
+      if (typeof req.query?.directory === 'string' && req.query.directory.length > 0) {
+        query.set('directory', req.query.directory);
+      }
+      if (typeof req.query?.workspace === 'string' && req.query.workspace.length > 0) {
+        query.set('workspace', req.query.workspace);
+      }
+      const suffix = query.toString() ? `?${query.toString()}` : '';
+      const response = await fetch(buildOpenCodeUrl(`/session/${encodeURIComponent(sessionID)}${suffix}`, ''), {
+        headers: {
+          ...collectForwardProxyHeaders(req.headers, getOpenCodeAuthHeaders()),
+          accept: 'application/json',
+          'accept-encoding': 'identity',
+        },
+      });
+      res.status(response.status);
+      applyForwardProxyResponseHeaders(response.headers, res);
+      return res.send(await response.text());
+    } catch (error) {
+      console.error('[proxy] Failed to unarchive OpenCode session:', error?.message ?? error);
+      return res.status(500).json({ error: 'Failed to unarchive session' });
+    }
   });
 
   // Generic proxy for non-SSE OpenCode API routes.

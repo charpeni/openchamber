@@ -40,6 +40,9 @@ type Args = {
   deleteSessions: (ids: string[]) => Promise<{ deletedIds: string[]; failedIds: string[] }>;
   archiveSession: (id: string) => Promise<boolean>;
   archiveSessions: (ids: string[]) => Promise<{ archivedIds: string[]; failedIds: string[] }>;
+  unarchiveSession: (id: string) => Promise<boolean>;
+  unarchiveSessions: (ids: string[]) => Promise<{ unarchivedIds: string[]; failedIds: string[] }>;
+
   childrenMap: Map<string, Session[]>;
   showDeletionDialog: boolean;
   setDeleteSessionConfirm: DeleteSessionConfirmSetter;
@@ -53,7 +56,29 @@ type Args = {
 export const useSessionActions = (args: Args) => {
   const { t } = useI18n();
   const [copiedSessionId, setCopiedSessionId] = React.useState<string | null>(null);
+  const [unarchivingSessionIds, setUnarchivingSessionIds] = React.useState<Set<string>>(() => new Set());
   const copyTimeout = React.useRef<number | null>(null);
+
+  const updateUnarchivingSessionIds = React.useCallback((ids: string[], pending: boolean) => {
+    if (ids.length === 0) return;
+    setUnarchivingSessionIds((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      ids.forEach((id) => {
+        if (pending) {
+          if (!next.has(id)) {
+            next.add(id);
+            changed = true;
+          }
+          return;
+        }
+        if (next.delete(id)) {
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, []);
 
   React.useEffect(() => {
     return () => {
@@ -178,6 +203,45 @@ export const useSessionActions = (args: Args) => {
     return collected;
   }, [args.childrenMap]);
 
+  const handleUnarchiveSession = React.useCallback(async (session: Session) => {
+    const descendantIds = collectDescendants(session.id)
+      .filter((s) => s.time?.archived)
+      .map((s) => s.id);
+
+    if (descendantIds.length === 0) {
+      updateUnarchivingSessionIds([session.id], true);
+      try {
+        const success = await args.unarchiveSession(session.id);
+        if (success) {
+          toast.success(t('sessions.sidebar.session.unarchive.success'));
+        } else {
+          toast.error(t('sessions.sidebar.session.unarchive.error'));
+        }
+      } finally {
+        updateUnarchivingSessionIds([session.id], false);
+      }
+      return;
+    }
+
+    const ids = [session.id, ...descendantIds];
+    updateUnarchivingSessionIds(ids, true);
+    try {
+      const { unarchivedIds, failedIds } = await args.unarchiveSessions(ids);
+      if (unarchivedIds.length > 0) {
+        toast.success(unarchivedIds.length === 1
+          ? t('sessions.sidebar.bulkActions.unarchivedSingle', { count: unarchivedIds.length })
+          : t('sessions.sidebar.bulkActions.unarchivedPlural', { count: unarchivedIds.length }));
+      }
+      if (failedIds.length > 0) {
+        toast.error(failedIds.length === 1
+          ? t('sessions.sidebar.bulkActions.failedUnarchiveSingle', { count: failedIds.length })
+          : t('sessions.sidebar.bulkActions.failedUnarchivePlural', { count: failedIds.length }));
+      }
+    } finally {
+      updateUnarchivingSessionIds(ids, false);
+    }
+  }, [args, collectDescendants, t, updateUnarchivingSessionIds]);
+
   // Archive cascades to subagents that aren't already archived; hard-delete
   // cascades to every descendant unconditionally. We collect once and filter
   // per-action so the dialog count and the executed ID list always agree.
@@ -280,6 +344,7 @@ export const useSessionActions = (args: Args) => {
 
   return {
     copiedSessionId,
+    unarchivingSessionIds,
     handleSessionSelect,
     handleSessionDoubleClick,
     handleSaveEdit,
@@ -287,6 +352,7 @@ export const useSessionActions = (args: Args) => {
     handleShareSession,
     handleCopyShareUrl,
     handleUnshareSession,
+    handleUnarchiveSession,
     handleDeleteSession,
     confirmDeleteSession,
   };

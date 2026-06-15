@@ -554,6 +554,38 @@ export async function updateSessionTitle(sessionId: string, title: string): Prom
   useGlobalSessionsStore.getState().upsertSession(session)
 }
 
+export async function unarchiveSession(sessionId: string): Promise<boolean> {
+  const sessionDirectory = getSessionDirectory(sessionId)
+  try {
+    const restored = await opencodeClient.updateSession(sessionId, { time: { archived: null } }, sessionDirectory)
+    if (!restored) {
+      throw new Error("session.update failed: server did not return the unarchived session")
+    }
+    if (restored.time?.archived !== undefined && restored.time.archived !== null) {
+      throw new Error("session.update failed: server still returned an archived session")
+    }
+    useGlobalSessionsStore.getState().upsertSession(restored)
+    return true
+  } catch (error) {
+    console.error("[session-actions] unarchiveSession failed", error)
+    return false
+  }
+}
+
+export async function unarchiveSessions(sessionIds: string[]): Promise<{ unarchivedIds: string[]; failedIds: string[] }> {
+  const unarchivedIds: string[] = []
+  const failedIds: string[] = []
+  for (const sessionId of sessionIds) {
+    const ok = await unarchiveSession(sessionId)
+    if (ok) {
+      unarchivedIds.push(sessionId)
+    } else {
+      failedIds.push(sessionId)
+    }
+  }
+  return { unarchivedIds, failedIds }
+}
+
 export async function shareSession(sessionId: string): Promise<Session | null> {
   const sessionDirectory = getSessionDirectory(sessionId)
   const result = await sdk().session.share({ sessionID: sessionId, directory: sessionDirectory })

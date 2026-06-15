@@ -72,6 +72,8 @@ type Props = {
   copiedSessionId: string | null;
   handleCopyShareUrl: (url: string, sessionId: string) => void;
   handleUnshareSession: (sessionId: string) => void;
+  handleUnarchiveSession: (session: Session) => void;
+  isUnarchiving: boolean;
   openSidebarMenuKey: string | null;
   setOpenSidebarMenuKey: (key: string | null) => void;
   renamingFolderId: string | null;
@@ -208,6 +210,7 @@ const areEqual = (prev: Props, next: Props): boolean => {
   if ((prev.secondaryMeta?.branchLabel ?? null) !== (next.secondaryMeta?.branchLabel ?? null)) return false;
   if (prev.mobileVariant !== next.mobileVariant) return false;
   if (prev.alwaysShowActions !== next.alwaysShowActions) return false;
+  if (prev.isUnarchiving !== next.isUnarchiving) return false;
   if ((prev.renderContext ?? 'project') !== (next.renderContext ?? 'project')) return false;
   if (prev.renamingFolderId !== next.renamingFolderId) return false;
 
@@ -243,6 +246,8 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     copiedSessionId,
     handleCopyShareUrl,
     handleUnshareSession,
+    handleUnarchiveSession,
+    isUnarchiving,
     openSidebarMenuKey,
     setOpenSidebarMenuKey,
     renamingFolderId,
@@ -544,8 +549,18 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const isStreaming = statusType === 'busy' || statusType === 'retry';
   const pendingPermissionCount = sessionPermissions.length;
   const showUnreadStatus = !isStreaming && needsAttention && !isActive;
-  const showStatusMarker = isStreaming || showUnreadStatus;
-  const statusMarkerContent = isStreaming
+  const showStatusMarker = isUnarchiving || isStreaming || showUnreadStatus;
+  const unarchivingLabel = t('sessions.sidebar.session.unarchive.pending');
+  const statusMarkerContent = isUnarchiving
+    ? (
+        <span
+          aria-label={unarchivingLabel}
+          title={unarchivingLabel}
+        >
+          <Icon name="loader-4" className="h-3.5 w-3.5 animate-spin text-primary" />
+        </span>
+      )
+    : isStreaming
     ? (
         <span
           className="h-1.5 w-1.5 rounded-full bg-primary animate-busy-pulse"
@@ -854,7 +869,14 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
           <Icon name="inbox-archive" className="mr-1 h-4 w-4" />
           {t('sessions.sidebar.bulkActions.archive')}
         </Item>
-      ) : null}
+      ) : (
+        <Item className="[&>svg]:mr-1" disabled={isUnarchiving} onClick={() => { if (!isUnarchiving) handleUnarchiveSession(session); }}>
+          {isUnarchiving
+            ? <Icon name="loader-4" className="mr-1 h-4 w-4 animate-spin" />
+            : <Icon name="inbox-unarchive" className="mr-1 h-4 w-4" />}
+          {isUnarchiving ? unarchivingLabel : t('sessions.sidebar.bulkActions.unarchive')}
+        </Item>
+      )}
       <Item className="text-destructive focus:text-destructive [&>svg]:mr-1" onClick={() => handleDeleteSession(session, { archivedBucket, hardDelete: true })}>
         <Icon name="delete-bin" className="mr-1 h-4 w-4" />
         {t('sessions.sidebar.bulkActions.delete')}
@@ -933,6 +955,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                 data-session-row={session.id}
                 data-session-scope={sessionDirectory ?? ''}
                 data-session-archived={archivedBucket ? '1' : '0'}
+                data-session-unarchiving={isUnarchiving ? '1' : '0'}
                 className={cn(
                   'group relative my-0.5 flex items-center rounded-md py-1 pr-1.5',
                   // Pull the row box left into the container gutter so the
@@ -942,6 +965,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                   '-ml-3',
                   depth > 0 ? 'pl-[32px]' : 'pl-[18px]',
                   isMissingDirectory ? 'opacity-75' : '',
+                  isUnarchiving ? 'opacity-70' : '',
                   // Active (currently open) session gets a subtle primary tint;
                   // multi-select highlight takes precedence when both apply.
                   isActive && !isRowSelected && 'bg-primary/10',
